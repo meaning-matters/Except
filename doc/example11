@@ -1,0 +1,14 @@
+Example 11: A VxWorks implementation of the application supplied routine for
+guarding changes to package internal data. This does disable task scheduling;
+so when deleting a task, there's no need to get hold of the lock. [VXW51]
+
+
+#include <vxWorks.h>
+
+void LockUnlock(int mode)
+{
+    if (mode == 0)
+        taskUnlock();
+    else
+        taskLock();
+}

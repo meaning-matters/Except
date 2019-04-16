@@ -1,0 +1,140 @@
+typedef struct _Class Class[1];         /* exception class */
+typedef struct _Class *ClassRef;        /* exception class reference */
+struct _Class {
+    int         notRethrown;            /* always 1 (used by throw()) */
+    ClassRef    parent;                 /* parent class */
+    char *      name;                   /* this class name string */
+    int         signalNumber;           /* optional signal number */
+};
+
+typedef enum _Scope {                   /* exception handling scope */
+    OUTSIDE = -1,                       /* outside any 'try' */
+    INTERNAL,                           /* exception handling internal */
+    TRY,                                /* in 'try' (across routine calls) */
+    CATCH,                              /* in 'catch' (idem.) */
+    FINALLY                             /* in 'finally' (idem.) */
+} Scope;
+
+typedef enum _State {                   /* exception handling state */
+    EMPTY,                              /* no exception occurred */
+    PENDING,                            /* exception occurred but not caught */
+    CAUGHT                              /* occurred exception caught */
+} State;
+
+typedef struct _Except {                /* exception handle */
+    int         notRethrown;            /* always 0 (used by throw()) */
+    State       state;                  /* current state of this handle */
+    jmp_buf     throwBuf;               /* start-'catching' destination */
+    jmp_buf     finalBuf;               /* perform-'finally' destination */
+    ClassRef    class;                  /* occurred exception class */
+    void *      pData;                  /* exception associated (user) data */
+    char *      file;                   /* exception file name */
+    int         line;                   /* exception line number */
+    int         ready;                  /* macro code control flow flag */
+    Scope       scope;                  /* exception handling scope */
+    int         first;                  /* flag if first try in function */
+    List *      checkList;              /* list used by 'catch' checking */
+    ClassRef    (*getClass)(void);      /* method returning class reference */
+    char *      (*getMessage)(void);    /* method getting description */
+    void *      (*getData)(void);       /* method getting application data */
+} Except;
+
+typedef struct _Context {               /* exception context per thread */
+    Except *    pEx;                    /* current exception handle */
+    Lifo *      exStack;                /* exception handle stack */
+    char        message[1024];          /* used by ExceptGetMessage() */
+    Handler     sigAbrtHandler;         /* default SIGABRT handler */
+    Handler     sigFpeHandler;          /* default SIGFPE handler */
+    Handler     sigIllHandler;          /* default SIGILL handler */
+    Handler     sigSegvHandler;         /* default SIGSEGV handler */
+} Context;
+
+extern Context *        pC;
+extern Class            Throwable;
+
+#define ex_class_declare(child, parent) extern Class child
+#define ex_class_define(child, parent)  Class child = { 1, parent, #child }
+#define ex_thread_cleanup(id)           ExceptThreadCleanup(id)
+#define outermost                       ExceptThreadCleanup(-1);
+
+ex_class_declare(Exception,           Throwable);
+ex_class_declare(OutOfMemoryError,    Exception);
+ex_class_declare(FailedAssertion,     Exception);
+ex_class_declare(RuntimeException,    Exception);
+ex_class_declare(AbnormalTermination, RuntimeException);  /* SIGABRT */
+ex_class_declare(ArithmeticException, RuntimeException);  /* SIGFPE */
+ex_class_declare(IllegalInstruction,  RuntimeException);  /* SIGILL */
+ex_class_declare(SegmentationFault,   RuntimeException);  /* SIGSEGV */
+
+#ifdef  DEBUG
+#define CHECKED                                                         \
+        static int checked
+#define CHECK_BEGIN(pC, pChecked, file, line)                           \
+            ExceptCheckBegin(pC, pChecked, file, line)
+#define CHECK(pC, pChecked, class, file, line)                          \
+                 ExceptCheck(pC, pChecked, class, file, line)
+#define CHECK_END                                                       \
+            !checked
+#else   /* DEBUG */
+#define CHECKED
+#define CHECK_BEGIN(pC, pChecked, file, line)           1
+#define CHECK(pC, pChecked, class, file, line)          1
+#define CHECK_END                                       0
+#endif  /* DEBUG */
+
+#define try                                                             \
+    ExceptTry(pC);                                                      \
+    while (1)                                                           \
+    {                                                                   \
+        Context *       pTmpC = ExceptGetContext(pC);                   \
+        Context *       pC = pTmpC;                                     \
+        CHECKED;                                                        \
+                                                                        \
+        if (CHECK_BEGIN(pC, &checked, __FILE__, __LINE__) &&            \
+            pC->pEx->ready && setjmp(pC->pEx->throwBuf) == 0)           \
+        {                                                               \
+            pC->pEx->scope = TRY;                                       \
+            do                                                          \
+            {
+
+#define catch(class, e)                                                 \
+            }                                                           \
+            while (0);                                                  \
+        }                                                               \
+        else if (CHECK(pC, &checked, class, __FILE__, __LINE__) &&      \
+                 pC->pEx->ready && ExceptCatch(pC, class))              \
+        {                                                               \
+            Except *e = LifoPeek(pC->exStack, 1);                       \
+            pC->pEx->scope = CATCH;                                     \
+            do                                                          \
+            {
+
+#define finally                                                         \
+            }                                                           \
+            while (0);                                                  \
+        }                                                               \
+        if (CHECK_END)                                                  \
+            continue;                                                   \
+        if (!pC->pEx->ready && setjmp(pC->pEx->finalBuf) == 0)          \
+            pC->pEx->ready = 1;                                         \
+        else                                                            \
+            break;                                                      \
+    }                                                                   \
+    ExceptGetContext(pC)->pEx->scope = FINALLY;                         \
+    while (ExceptGetContext(pC)->pEx->ready > 0 || ExceptFinally(pC))   \
+        while (ExceptGetContext(pC)->pEx->ready-- > 0)
+
+#define throw(pExceptOrClass, pData)                                    \
+    ExceptThrow(pC, (ClassRef)pExceptOrClass, pData, __FILE__, __LINE__)
+
+#define return(x)                                                       \
+    {   if (ExceptGetScope(pC) != OUTSIDE) {                            \
+            void *pData = malloc(sizeof(jmp_buf));    /* returnBuf */   \
+            ExceptGetContext(pC)->pEx->pData = pData;                   \
+            if (setjmp(*(jmp_buf *)pData) == 0)                         \
+                ExceptReturn(pC);                                       \
+            else                                                        \
+                free(pData);                                            \
+        }                                                               \
+        return x;                                                       \
+    }

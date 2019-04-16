@@ -1,0 +1,28 @@
+Example 1: Really, this is C code! When the critical code throws a MyFault 
+exception or any of its subclasses, it is handled. For any other exception a 
+message containing its name and where thrown (file & line) are printed,
+followed by a rethrow. The clean up code is always executed.
+
+
+#include "Except.h"
+
+ex_class_define(MyFault, Exception);
+ex_class_define(AlsoMyFault, MyFault);
+ex_class_define(AgainMyFault, MyFault);
+
+void TryMe(void)
+{
+    try {
+        /* critical code */
+    }
+    catch (MyFault, e) {
+        /* handle one of my faults */
+    }
+    catch (Throwable, e) {
+        printf("%s\n", e->getMessage());
+        throw (e, NULL);
+    }
+    finally {
+        /* clean up code */
+    }
+}

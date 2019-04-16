@@ -1,0 +1,28 @@
+Example 6: Propagation and overruling. This routine spells "M a g i c" and
+returns 2. The return(1) overrules the thrown Throwable and return(2) overrules
+return(1); subsequently return(2) is propagated to the outermost try statement
+in this routine, after which the native 'return 2' is finally executed.
+
+
+int spell(void)
+{
+    try {
+        try {
+            try
+                throw (Throwable, 0);
+            catch (Throwable, e)
+                return(1);
+            finally {
+                printf("M a ");
+                return(2);
+            }
+        }
+        catch (Throwable, e)
+            printf("Magic");
+        finally
+            printf("g ");
+    }
+    finally
+        printf("i c");
+    return(3);
+}

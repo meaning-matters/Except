@@ -1,0 +1,21 @@
+Example 9: One of the memory allocation macros that throw OutOfMemoryError if
+the native call failed.
+
+
+a. Alloc.h:
+
+#define calloc(n, size) AllocCalloc(pC, n, size, __FILE__, __LINE__)
+
+
+b. Alloc.c (does not include Alloc.h):
+
+void * AllocCalloc(Context *pC, int number, int size, char *file, int line)
+{
+    void *pMem;
+
+    pMem = calloc(number, size);
+    if (pMem == NULL)
+        ExceptThrow(pC, OutOfMemoryError, NULL, file, line);
+
+    return pMem;
+}

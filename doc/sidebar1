@@ -1,0 +1,65 @@
+Sidebar 1: Considering why C++ does not support signals as exceptions.
+
+
+Bjarne Stroustrup argues about C++ exception handling that:
+
+    "The mechanism is designed to handle only synchronous exceptions, such as
+     array checks and I/O errors. Asynchronous events, such as keyboard
+     interrupts and certain arithmetic errors, are not necessarily exceptional
+     and are not handled directly by this mechanism. Asynchronous events
+     require mechanisms fundamentally different from exceptions (as defined
+     here) to handle them cleanly and efficiently. Many systems offer
+     mechanisms, such as signals, to deal with asynchrony, but because these
+     tend to be system-dependent, they are not described here."
+
+     [STR97] - $14.1.1, page 357.
+
+According to the Solaris on-line manual:
+
+    "Signals can be generated synchronously or asynchronously. Events directly
+     caused by the execution of code by a thread, such as a reference to an
+     unmapped, protected, or bad memory, ... are said to be synchronously
+     generated."
+
+     [SOL26] - signal(5).
+
+Indeed, as mister Stroustrup says, asynchronous events must not be handled by
+the same mechanism used for handling synchronous events. However, he does not
+mention synchronous signals (nor deals with signal handling) anywhere in his 
+book [STR97]. Conceptually, synchronous signals and regular exceptions are the 
+same.
+
+It is true that the facilities for signal handling offered by the various
+systems, differ a lot. However, all systems supporting standard C++ have the
+good old ANSI C <signal.h> definitions in common:
+
+    "The header <signal.h> provides facilities for handling exceptional 
+     conditions that arise during execution, such as an interrupt signal
+     from an external source or an error in execution."
+
+     [KER88] - Appendix B9, page 255.
+
+So by definition, all systems support six signals. Two typically coming 'from
+an external source' (i.e., asynchronous): SIGINT and SIGTERM, and the others
+caused by 'an error in execution' (i.e., synchronous): SIGABRT, SIGFPE, SIGILL
+and SIGSEGV. Furthermore there are two common library functions: signal() and
+raise().
+
+The following aspects must be considered when dealing with differences in
+signal handling:
+* Some systems mask the signal during execution of its handler. As far as I 
+  know, this mask is always reset when the handler finishes (i.e., returns or
+  performs a longjmp()).
+* Some systems set the signal's disposition to SIG_DFL (the default) prior to 
+  executing its handler. An exception handling mechanism will have installed a 
+  handler and requires it to be restored again when finished. Not all systems
+  do this (for every signal).
+* In a multi-threaded environment, the threads either share the signal
+  handlers, or each have a private set.
+* Again as far as I know, a synchronous signal is always delivered to and 
+  handled by the thread that initiated it even if the handlers are shared.
+The differences, only in the second and third aspect, are not fundamental. 
+Simply re-installing the signal handler during its execution using signal(),
+settles the first difference. And, as my implementation shows, it is quite
+possible to support both shared and private handler schemes providing
+identical functionality.

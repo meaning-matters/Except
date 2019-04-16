@@ -1,0 +1,9 @@
+Example 4: Superfluous catch. Catching a baseclass hides all subclass catches
+below it.
+
+
+try {}
+catch (RuntimeException) {}
+catch (OutOfMemoryError) {}
+catch (IllegalInstruction) {}  /* never matched */
+finally {}

@@ -1,0 +1,338 @@
+Title:  Let's Finally Try to Catch C
+Sub:    Centralized exception handling in C
+By:     Cornelis van der Bent
+
+
+Kees recently developed a generic RISC pipeline optimizer and added reverse
+engineering to a graphical hardware design tool. He loves making complex
+things easy and is interested in using (simple lateral) thinking techniques
+during the software development process. Contact him at vdbent@support.nl.
+-------------------------------------------------------------------------------
+
+Well written C code has to deal with four kinds of anomalies: regular failures
+(e.g., unable to open file), out-of-memory conditions, run-time error signals 
+(like SIGSEGV), and failed assertions. Traditionally, each is handled in a
+different way: returning error codes, exiting, using setjmp()/longjmp(), and
+printing a message followed by abort() respectively. Furthermore, C does not
+support centralized exception handling like C++ and Java do. This all results
+in functional code getting cluttered with error handling statements.
+
+While working on a recursive-descent parser in C, I needed a mechanism to skip
+any number of stack frames for easy error handling. The simple try, catch and 
+throw macros I created using setjmp()/longjmp() worked fine, but did not allow
+nesting and only addressed one kind of errors. Soon after, I took up the
+challenge to create a complete centralized exception handling package in plain
+ANSI C, that looks like Java (and C++) in the best possible way, is easy to use
+and has as little side-effects as possible.
+
+Looking at the result, I am quite satisfied. The package as it is now, offers
+many of Java's features and code using it looks just like C++ and Java. It even 
+has important features not found in C++: supplying throw file location and
+catching signals. To get a taste see Example 1 and Figure 1. In this article I
+will show you how to use the package, describing every feature in detail. Also, 
+I will explain some interesting aspects of the implementation. Even if you will 
+never use this package, reading this article can be of help for better
+understanding of centralized exception handling in C++ and Java.
+
+
+Catching
+--------
+When an exception occurs inside a try statement, its catch clauses are tried
+from top to bottom. If the thrown exception is equal to, or a subclass of 
+the first argument of the catch() macro, then its code is executed. An
+exception is caught only by the first matching catch clause.
+
+As second argument you must supply the identifier name by which the exception
+can be referenced in the catch code. The Except structure (see Listing One),
+to which you get a pointer, currently has three access member functions:
+* You can use getClass() to find out which subclass you actually caught as in
+  Example 2.
+* Then, getMessage() returns the address of a (per thread) static string
+  containing the exception class name and where thrown (file name & line 
+  number).
+* Thirdly, getData() hands you the data pointer that was supplied as second
+  argument of the corresponding throw(). This allows you to pass some data from
+  critical code to exception handling code. For a FailedAssertion it points to
+  a string containing the failed/false expression.
+
+Notice that you don't supply these member functions a pointer to the Except
+structure, as you would expect to be needed in C. I used the anyhow needed 
+mechanism for looking up the internal exception handling data for the current
+thread and its try statement nesting level, as explained in Figure 2. To
+achieve Java likeness, I took the extra delay caused by the, yet very fast,
+(hash table) lookup for granted.
+
+
+Catch Checking
+--------------
+Java and C++ compilers nicely notify you, when catching the same exception 
+class more than once (Example 3), and when a subclass is caught below its
+baseclass (Example 4). Although not at compile-time, my package does offer
+this same functionality at run-time, as a '-DDEBUG option'. Unfortunately
+a try statement is only checked when it is executed.
+
+You will see from the macro definitions in Listing One, that the catch clauses
+are enclosed by a while-loop that starts in try and ends in finally. Normally
+this loop is executed twice, with catch checking a third early pass is added. 
+During this pass the ExceptCheck() (Listing Two) routine is invoked for each 
+catch clause. All user code is skipped. Because the flag named checked, defined
+inside the loop, is static, each try statement will only be checked once by the 
+first thread executing it. When DEBUG is not defined, the compiler will
+optimize away all that's left from the macros used; so there is no persistent 
+performance loss.
+
+
+Exception Class Hierarchy
+-------------------------
+As in OO languages, you can define a tree hierarchy of exception classes. The
+package defines a number of classes it uses for the standard exceptions, as
+shown in Figure 3. To build your own class tree(s), you will typically extend
+the standard Throwable and Exception classes. The nice thing is that there are
+no limits! Defining a new class is done with ex_class_define(child,parent) as
+you can see in Example 1. Just like with C variables, you may place a class 
+declaration ex_class_declare(child,parent) in a common header file when you
+want to share it between modules. The inheritance mechanism works across
+compiled modules, so only the declaration needs to be in scope in order to 
+extend, catch (itself or one of its subclasses) or throw an exception class.
+
+I particularly like this feature myself: (Artificial) Inheritance in such a
+simple way. The ex_class_define(child,parent) macro expands to the definition
+of a variable named child, of type Class, and includes its initializer. This
+initializer makes the Class structure member called parent, point to its
+parent. In this way each individual exception class is linked to its parent,
+resulting in a DAG (directed acyclic graph). All ancestors of any class can be
+found by following the links, which is exactly what the catching code
+(ExceptCatch() in Listing Two) needs. Figure 4 gives an overview.
+
+Note that adding an inheritance level, on average slows down catching a little
+because the links are followed sequentially.
+
+
+Throwing
+--------
+Using the throw() macro you can cause an exception. As first argument you
+specify the exception class, using the second argument you can pass a void
+pointer to your exception handling code (see "Catching" above). An exception
+can be thrown from any scope:
+* Outside any try statement: reported as being lost (the default action for
+  user exceptions).
+* Inside try: caught by one of its catch clauses, otherwise propagated.
+* Inside catch: propagated, but finally is executed first.
+* Inside finally: overrides any uncaught exception and itself is propagated.
+
+Note that a throw works across function call boundaries, so with 'inside try'
+for example, I mean in the immediate context of the try or from a function
+(indirectly) called from this context (see Example 5). Java behaves in exactly
+the same way [ARN97].
+
+All the throw() macro does, is invoking ExceptThrow() from Listing Two.
+Depending on the scope, it either prints a message ('outside'), or performs a
+non-local goto using the ANSI C longjmp() back to the expanded try code just 
+before the catch clauses ('inside try') or the expanded finally ('inside catch'
+ or 'inside finally'). In order to be able to jump forwards to the expanded 
+finally, the while-loop starting in try and ending in the finally macro code,
+is executed once before any user code, just to save the longjmp() destination 
+buffer finalBuf. This is done using the ANSI C setjmp(). Study Figure 5 if you 
+want to get a grip on how this all works.
+
+For a short introduction to setjmp()/longjmp() turn to worth buying [LIB93].
+
+
+Re-throwing
+----------
+Inside a catch clause you can throw the just caught exception again to let
+it propagate to a higher exception handling level. Example 2 shows how this
+is done.
+
+This means that throw() can handle either a ClassRef, or a pointer to an Except 
+structure (Listing One). The underlying routine ExceptThrow() can keep them
+apart by looking at the notRethrown member that both datastructures have in
+common. The value of notRethrow is always zero in Except structures and always
+one in exception Classes. Apart from minor differences, a re-throw works in the
+same way as a regular throw inside a catch clause.
+
+
+Propagation, Overruling, Nesting and Recursion
+----------------------------------------------
+When an exception is not caught at the exception handling level it occurred,
+it is propagated upwards to the enclosing level. As you can see in Figure 5,
+propagation involves simply re-throwing the exception right after try statement 
+it came from. Depending on the scope, one of four actions is performed as
+described in "Throwing" above. When the new scope is outside, the default
+action for each type of exception is performed:
+* User thrown or out-of-memory: report it as being lost.
+* Failed assertion: print standard assert() message and abort() (if configured).
+* Signal: raise() it.
+
+Propagation continues until the pending exception is caught or enters the
+outside scope. It is important to know that during propagation the finally
+code block of every visited level is executed; this also applies when you
+return(), but only up to the outermost level of the current routine. Because
+the finally user code is executed prior to propagation, it can overrule a 
+pending exception or return. Example 6 shows you what this means.
+
+A try statement may appear, with unlimited nesting, in each of the three
+blocks: try, catch and finally. Propagation works properly in all cases.
+Propagation also works fine for recursive functions (Example 10).
+
+Especially when looking at Figure 5, you can imagine that it took quite some
+effort to get the package behave correctly and exactly as Java [ARN97], for
+the many different scenarios.
+
+
+Returning
+---------
+To allow propagation of a return (see "Propagation and Overruling" above), I
+defined the return() macro having the required behavior (Listing One). Although
+I think that overruling a C keyword is not nice, here it does not hurt much 
+(when you are aware of it).
+
+Because return was defined as a macro with a single argument, you can still
+refer to the native return simply by not using parentheses. In the (rare)
+occasions that the returned expression starts with something between
+parentheses, for example a cast:
+
+    return (int *)pData;     /* compile-time error */
+
+you can use the comma operator to prevent the preprocessor recognizing the 
+return() macro:
+
+    return 0, (int *)pData;  /* OK */
+
+The only 'real problem' that remains, is a relatively small amount of overhead.
+
+
+Break and Continue
+------------------
+The break and continue statements used in a try, catch or finally (of course
+outside a while, for or switch statement) work differently from Java.
+Performing a break or continue inside a try or catch starts executing the
+finally. Inside a finally the remaining part of your finally code is simply
+skipped. Propagation of a pending exception or return is not affected.
+
+When you place a try statement in for example a while loop in Java, you can
+use break to leave the loop (finally is first executed), or use continue
+to skip to the next iteration (finally code also first executed). If you need
+this functionality, you can use the workaround shown in Example 7, or
+restructure your code.
+
+
+Assertion Checking
+------------------
+The header "Assert.h" supplied with this package, defines the assert() macro 
+which performs a throw() on failure. You can catch failed assertions with the 
+FailedAssertion exception class. The string representation of the failed (i.e., 
+false) expression can be obtained with the caught exception member function 
+getData(). 
+
+I experienced that, when building fault tolerant code, it can be very handy to
+have a macro that works as assert() during DEBUGging, but returns on failure
+during field operation. For this purpose I created a macro validate(). See
+Example 8. It has also helped me finding the cause of a failed assertion, by
+letting assert() use a function, which allows placing a breakpoint. The
+standard C assert() does not have this feature.
+
+I highly recommend Writing Solid Code by Steve Maguire [MAG93], it marvelously 
+covers the subject of assertion checking and bug finding in general.
+
+
+Memory Allocation
+-----------------
+This package supplies an optional header file that replaces the standard
+memory allocation routines with macros. These macros use routines, from the
+corresponding module, which invoke the native C library routines, but throw
+an exception when out of memory. Example 9 shows the macro and corresponding
+routine of one of them. (You may want to use a different name for the macros.)
+
+
+Signal Handling
+---------------
+As an additional feature compared to C++, the package delivers synchronous 
+signals as any other exception (Sidebar 1). The following ANSI C defined
+[KER88] signals are supported:
+* SIGABRT, results in AbnormalTermination.
+* SIGFPE, results in ArithmeticException.
+* SIGILL, results in IllegalInstruction.
+* SIGSEGV, results in SegmentationFault.
+
+Any of these four exception classes can be caught with their parent class
+RuntimeException (Figure 3 and Example 10)
+
+As part of executing an outermost try, the same handler (ExceptThrowSignal()
+in Listing Two) is installed for all four signals. The replaced (default)
+handlers are stored.
+
+Basicly, all the handler does is throwing the exception class that corresponds 
+to the received signal. Subsequently, ExceptThrow() performs a longjmp(), at 
+which the signal handling context is left (Figure 5).
+
+During an outermost finally, the signal handlers stored during the outermost
+try will be restored again. In a multi-threading environment the threads
+either share the signal handlers or each have their private set. With shared
+handlers, restoration is delayed until the final thread leaves its outermost 
+finally. Selection between shared or private handlers is done at compile-time,
+with a single preprocessor flag.
+
+
+Multi-threading
+---------------
+This package allows multiple threads, having a common address space, to
+concurrently use exception handling. The offered functionality is exactly the
+same as described so far. The internal exception context, that has to be kept 
+for each thread (Figure 2), is conveniently hidden; you are not confronted with 
+obscure pointers as you would expect to see in a C implementation.
+
+The package code is platform independent and fully ANSI C. Yet, you must supply
+only two platform specific functions:
+* A function having no arguments that returns the unique int(eger) ID of the
+  current thread. As Figure 2 shows you, the thread ID is used to look up the 
+  exception context of the current thread. Most platforms have a function like
+  this you can use right away (I know of Solaris, POSIX, VxWorks and NT).
+* A function with a single boolean argument and no return value, that can
+  disable/lock (argument is 1) and enable/unlock (argument is 0) thread
+  scheduling. Because the threads share data, the package needs to mutual
+  exclude different threads modifying this data. Additionally a thread may
+  only kill another thread when it holds the lock, otherwise the shared data
+  might be left in an undefined state by the killed thread.
+  Some platforms supply functions that directly disable/enable scheduling
+  (Example 11). On other platforms you can use a mutual exclusion object
+  (Example 12).
+
+When a thread kills another thread it must call ex_thread_cleanup() with the
+ID of the killed thread. This prevents a memory leak and in case of shared
+signal handlers makes sure that the default signal handlers are restored when 
+the last thread leaves its outermost finally.
+
+
+Conclusion
+----------
+Of course many others have used setjmp()/longjmp() to create more or less
+sophisticated exception handling mechanisms. One of them is even described in
+a book [HAN97]. Although I have never seen nor heard of a package that comes
+close to what I have created, I am very curious to see other implementations
+and learn from them. Also, when you have comments on my implementation, please
+let me know.
+
+Crafting this package was really exciting and fun. I hope you will enjoy it
+and find it useful. The latest version is available from www.support.nl/~shape.
+
+
+References
+----------
+[ARN97] Arnold, K., Gosling, J. 1997. The Java Programming Language, second
+        edition. Addison-Wesley, Reading, MA.
+[HAN97] Hanson, D.R. 1997. C Interfaces and Implementations, techniques for
+        creating reusable software. Addison-Wesley, Reading, MA.
+[KER88] Kernigham, B.W., Ritchie, D.M. 1988. The C Programming Language, second
+        edition. Prentice Hall, Englewood Cliffs, NJ.
+[LIB93] Libes, D. 1993. Obfuscated C and Other Mysteries. John Wiley & Sons,
+        New York.
+[MAG93] Maguire, S. 1993. Writing Solid Code. Microsoft Press, ...
+[SOL26] Sun Microsystems 1997. Solaris 2.6 on-line manual pages. Mountain View,
+        CA.
+[STR97] Stroustrup, B. 1997. The C++ Programming Language, third edition.
+        Addison-Wesley, Reading, MA.
+[VXW51] Wind River Systems 1993. VxWorks Reference Manual 5.1. Alamada, CA.
+
+
+                                     DDJ

@@ -1,0 +1,314 @@
+Context *       pC = NULL;
+Class           Throwable = { 1, NULL, "Throwable" };
+static Class    ReturnEvent = { 1, NULL, "ReturnEvent" };
+
+ex_class_define(Exception,           Throwable);
+ex_class_define(OutOfMemoryError,    Exception);
+ex_class_define(FailedAssertion,     Exception);
+ex_class_define(RuntimeException,    Exception);
+ex_class_define(AbnormalTermination, RuntimeException);  /* SIGABRT */
+ex_class_define(ArithmeticException, RuntimeException);  /* SIGFPE */
+ex_class_define(IllegalInstruction,  RuntimeException);  /* SIGILL */
+ex_class_define(SegmentationFault,   RuntimeException);  /* SIGSEGV */
+
+/******** get exception block scope ********/
+Scope ExceptGetScope(Context *pC) {
+    if (pC == NULL) pC = ExceptGetContext(NULL);
+    if (pC == NULL || pC->pEx == NULL)
+        return OUTSIDE;
+    else
+        return 0,((Except *)LifoPeek(pC->exStack, 1))->scope;
+}
+
+/******** get exception handling context of current thread ********/
+Context * ExceptGetContext(Context *pC) {
+#if     MULTI_THREADING
+    if (pC == NULL && pContextHash != NULL)
+        pC = HashLookup(pContextHash, EXCEPT_THREAD_ID_FUNC());
+    return pC;
+#else
+    return &defaultContext;
+#endif
+}
+
+/******** create exception handling context for thread ********/
+#if     MULTI_THREADING
+static Context * ExceptCreateContext(void) {
+    Context *   pC
+
+    EXCEPT_THREAD_LOCK_FUNC(1);
+    pC = calloc(1, sizeof(Context));
+    HashAdd(pContextHash, EXCEPT_THREAD_ID_FUNC(), pC);
+    EXCEPT_THREAD_LOCK_FUNC(0);
+    return(pC);
+}
+#else
+#define ExceptCreateContext()   NULL
+#endif
+
+/******** get current exception description string ********/
+static char * ExceptGetMessage(void) {
+    Context *   pC = ExceptGetContext(NULL);
+
+    sprintf(pC->message, "%s: file \"%s\", line %d.",
+            pC->pEx->class->name, pC->pEx->file, pC->pEx->line);
+    return pC->message;
+}
+
+/******** restore default signal handlers if needed ********/
+static int ExceptRestoreHandlers(Context *pC) {
+    int restored = 0;
+
+    EXCEPT_THREAD_LOCK_FUNC(1);
+    if (MULTI_THREADING && SHARE_HANDLERS && --numThreadsTry == 0) {
+        signal(SIGABRT, sharedSigAbrtHandler);
+        signal(SIGFPE,  sharedSigFpeHandler);
+        signal(SIGILL,  sharedSigIllHandler);
+        signal(SIGSEGV, sharedSigSegvHandler);
+        restored = 1;
+    }
+    else if (!MULTI_THREADING || !SHARE_HANDLERS) {
+        signal(SIGABRT, pC->sigAbrtHandler);
+        signal(SIGFPE,  pC->sigFpeHandler);
+        signal(SIGILL,  pC->sigIllHandler);
+        signal(SIGSEGV, pC->sigSegvHandler);
+        restored = 1;
+    }
+    EXCEPT_THREAD_LOCK_FUNC(0);
+    return restored;
+}
+
+/******** cleanup exception handling for killed thread ********/
+void ExceptThreadCleanup(int threadId) {
+#if     MULTI_THREADING
+    validate(threadId != EXCEPT_THREAD_ID_FUNC(), NOTHING);
+    if (threadId == -1) threadId = EXCEPT_THREAD_ID_FUNC();
+
+    if (pContextHash != NULL) {
+        Context * pC = HashLookup(pContextHash, threadId);
+        if (pC != NULL) {
+            EXCEPT_THREAD_LOCK_FUNC(1);
+            ExceptRestoreHandlers(pC);
+            LifoDestroyData(pC->exStack);
+            if (pC->pEx->checkList != NULL)
+                ListDestroyData(pC->pEx->checkList);
+            free(HashRemove(pContextHash, threadId));
+            EXCEPT_THREAD_LOCK_FUNC(0);
+        }
+    }
+#endif
+}
+
+/******** 'throw' exception caused by signal ********/
+static void ExceptThrowSignal(int number) {
+    ClassRef    class;
+
+    switch (number) {
+    case SIGABRT: class = AbnormalTermination; break;
+    case SIGFPE:  class = ArithmeticException; break;
+    case SIGILL:  class = IllegalInstruction;  break;
+    case SIGSEGV: class = SegmentationFault;   break;
+    }
+    class->signalNumber = number;       /* redundant after first time */
+    signal(number, ExceptThrowSignal);  /* reinstall handler */
+    ExceptThrow(NULL, class, NULL, "?", 0);
+}
+
+/******** prepare for 'try' ********/
+void ExceptTry(Context *pC) {
+    int first;
+    if (MULTI_THREADING && pContextHash == NULL) pContextHash = HashCreate();
+    if (first = (pC == NULL)) pC = ExceptGetContext(NULL);
+    if (pC == NULL) pC = ExceptCreateContext();
+
+    EXCEPT_THREAD_LOCK_FUNC(1);
+    if (pC->exStack == NULL) {
+        pC->exStack = LifoCreate();
+
+        if (MULTI_THREADING && SHARE_HANDLERS && numThreadsTry++ == 0) {
+            sharedSigAbrtHandler = signal(SIGABRT, ExceptThrowSignal);
+            sharedSigFpeHandler  = signal(SIGFPE,  ExceptThrowSignal);
+            sharedSigIllHandler  = signal(SIGILL,  ExceptThrowSignal);
+            sharedSigSegvHandler = signal(SIGSEGV, ExceptThrowSignal);
+        }
+        else if (!MULTI_THREADING || !SHARE_HANDLERS) {
+            pC->sigAbrtHandler = signal(SIGABRT, ExceptThrowSignal);
+            pC->sigFpeHandler  = signal(SIGFPE,  ExceptThrowSignal);
+            pC->sigIllHandler  = signal(SIGILL,  ExceptThrowSignal);
+            pC->sigSegvHandler = signal(SIGSEGV, ExceptThrowSignal);
+        }
+    }
+    LifoPush(pC->exStack, pC->pEx = calloc(sizeof(Except), 1));
+    pC->pEx->first = first;
+    EXCEPT_THREAD_LOCK_FUNC(0);
+}
+
+/******** dispatch exception 'throw' ********/
+void ExceptThrow(Context *pC, void *pEC, void *pData, char *file, int line) {
+    if (pC == NULL) pC = ExceptGetContext(NULL);
+
+    if (pC == NULL || pC->exStack == NULL || LifoCount(pC->exStack) == 0) {
+        fprintf(stderr, "%s lost: file \"%s\", line %d.\n",
+                ((ClassRef)pEC)->name, file, line);
+        return;
+    }
+    if (((ClassRef)pEC)->notRethrown) {
+        pC->pEx->class      = (ClassRef)pEC;
+        pC->pEx->pData      = pData;
+        pC->pEx->file       = file;
+        pC->pEx->line       = line;
+        pC->pEx->getMessage = ExceptGetMessage;
+        pC->pEx->getData    = ExceptGetData;
+    }
+    pC->pEx->state = PENDING;   /* in case of throw() inside 'catch' */
+    switch (pC->pEx->scope) {
+    case TRY:     longjmp(pC->pEx->throwBuf, 1);
+    case CATCH:   longjmp(pC->pEx->finalBuf, 1);
+    case FINALLY: longjmp(pC->pEx->finalBuf, 1);
+    }
+}
+
+/******** determine if class is derived or identical ********/
+static int ExceptIsDerived(ClassRef class, ClassRef base) {
+    while (class->parent != NULL && class != base)
+        class = class->parent;
+    return class == base;
+}
+
+/******** check if exception can be caught ********/
+int ExceptCatch(Context *pC, ClassRef class) {
+    if (pC == NULL) pC = ExceptGetContext(NULL);
+    if (pC->pEx->state == PENDING && ExceptIsDerived(pC->pEx->class, class))
+        pC->pEx->state = CAUGHT;
+    return pC->pEx->state == CAUGHT;
+}
+
+/******** resolve at end of 'finally' ********/
+int ExceptFinally(Context *pC) {
+    Except *    pEx, ex;
+
+    if (pC == NULL) pC = ExceptGetContext(NULL);
+
+    EXCEPT_THREAD_LOCK_FUNC(1);
+    ex = *(pEx = LifoPop(pC->exStack));
+    free(pEx);
+    pC->pEx = LifoCount(pC->exStack) ? LifoPeek(pC->exStack, 1) : NULL;
+    EXCEPT_THREAD_LOCK_FUNC(0);
+
+    if (LifoCount(pC->exStack) == 0) {  /* outermost level - default action */
+        int     rstrd = ExceptRestoreHandlers(pC);
+
+        if (ex.state == PENDING) {
+            if (ex.class == FailedAssertion)
+                AssertAction(pC, DO_ABORT, ex.pData, ex.file, ex.line);
+            else if (ExceptIsDerived(ex.class, RuntimeException) && rstrd) {
+                EXCEPT_THREAD_LOCK_FUNC(1);
+                LifoDestroy(pC->exStack);
+                if (MULTI_THREADING)
+                    free(HashRemove(pContextHash, EXCEPT_THREAD_ID_FUNC()));
+                else
+                    pC->exStack = NULL;
+                EXCEPT_THREAD_LOCK_FUNC(0);
+                raise(ex.class->signalNumber);
+            }
+            else if (ex.class == ReturnEvent) {
+                EXCEPT_THREAD_LOCK_FUNC(1);
+                LifoDestroy(pC->exStack);
+                if (MULTI_THREADING)
+                    free(HashRemove(pContextHash, EXCEPT_THREAD_ID_FUNC()));
+                else
+                    pC->exStack = NULL;
+                EXCEPT_THREAD_LOCK_FUNC(0);
+                longjmp(*(jmp_buf *)ex.pData, 1);
+            }
+            else
+                fprintf(stderr, "%s lost: file \"%s\", line %d.\n",
+                        ex.class->name, ex.file, ex.line);
+        }
+        EXCEPT_THREAD_LOCK_FUNC(1);
+        LifoDestroy(pC->exStack);
+        if (MULTI_THREADING)
+            free(HashRemove(pContextHash, EXCEPT_THREAD_ID_FUNC()));
+        else
+            pC->exStack = NULL;
+        EXCEPT_THREAD_LOCK_FUNC(0);
+    }
+    else                                        /* inner level - propagate */
+        if (ex.state == PENDING)
+            if (ex.class == ReturnEvent && ex.first)
+                longjmp(*(jmp_buf *)ex.pData, 1);    /* pData is returnBuf */
+            else
+                ExceptThrow(pC, ex.class, ex.pData, ex.file, ex.line);
+    return 0;
+}
+
+/******** process 'return' ********/
+void ExceptReturn(Context *pC) {
+    if (pC == NULL) pC = ExceptGetContext(NULL);
+
+    pC->pEx->class = ReturnEvent;   /* may overrule pending exception */
+    pC->pEx->state = PENDING;       /* in case of return() inside 'catch' */
+    longjmp(pC->pEx->finalBuf, 1);
+}
+
+/******** initiate 'catch' condition checking ********/
+int ExceptCheckBegin(Context *pC, int *pChecked, char *file, int line) {
+    if (pC->pEx->checkList == NULL && !*pChecked) {
+        EXCEPT_THREAD_LOCK_FUNC(1);
+        pC->pEx->checkList = ListCreate();
+        EXCEPT_THREAD_LOCK_FUNC(0);
+    }
+    else {
+        if (!*pChecked) {
+            if (ListCount(pC->pEx->checkList) == 0) {
+                fprintf(stderr,
+                    "Warning: No catch clause(s): file \"%s\", line %d.\n",
+                    file, line);
+            }
+            EXCEPT_THREAD_LOCK_FUNC(1);
+            ListDestroyData(pC->pEx->checkList);
+            pC->pEx->checkList = NULL;
+            *pChecked = 1;
+            EXCEPT_THREAD_LOCK_FUNC(0);
+        }
+    }
+    return *pChecked;
+}
+
+/******** perform 'catch' condition check ********/
+int ExceptCheck(Context *pC, int *pChecked, ClassRef class,
+                char *file, int line) {
+    typedef struct _Check {
+        ClassRef        class;
+        int             line;
+    } Check;
+
+    if (!*pChecked) {
+        Check * pCheck = ListHead(pC->pEx->checkList)
+
+        while (pCheck != NULL) {                /* breaked from */
+            if (class == pCheck->class) {
+                fprintf(stderr, "Duplicate catch(%s): file \"%s\", line %d; "
+                        "already caught at line %d.\n",
+                        class->name, file, line, pCheck->line);
+                break;
+            }
+            if (ExceptIsDerived(class, pCheck->class)) {
+                fprintf(stderr, "Superfluous catch(%s): file \"%s\", line %d"
+                        "; already caught by %s at line %d.\n", class->name,
+                        file, line, pCheck->class->name, pCheck->line);
+                break;
+            }
+            pCheck = ListNext(pC->pEx->checkList);
+        }
+        if (pCheck == NULL) {
+            EXCEPT_THREAD_LOCK_FUNC(1);
+            pCheck = malloc(sizeof(Check));
+            pCheck->class = class;
+            pCheck->line  = line;
+            ListAddTail(pC->pEx->checkList, pCheck);
+            EXCEPT_THREAD_LOCK_FUNC(0);
+        }
+    }
+    return *pChecked;
+}

@@ -1,0 +1,14 @@
+Example 2: Using getClass() to determine the actual caught (base)class. Two
+(sub)classes are 'handled' and any other is propagated by a re-throw.
+
+
+catch (MyFault, e) {
+    switch (e->getClass()) {
+    case ReallyMyFault:
+    case AlsoMyFault:
+        /* I apologize */
+        break;
+    default:
+        throw (e, NULL);
+    }
+}

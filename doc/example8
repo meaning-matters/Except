@@ -1,0 +1,13 @@
+Example 8: More structural checks (e.g., dealing with wrong use of a library)
+are done with assert(), while behavioral checks (dealing with run-time 
+conditions) are done with validate().
+
+
+#include "Assert.h"
+
+void * ListRemoveHead(List *pList)
+{
+    assert(pList != NULL);
+    validate(pList->count > 0, NULL);
+    ...
+}

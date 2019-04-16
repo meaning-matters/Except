@@ -1,0 +1,22 @@
+Example 7: Workaround when you want Java-like break behavior. The workaround
+for continue is similar.
+
+
+even(void)
+{
+    int breaked = 0;
+
+    while (...)
+    {
+        try
+            if (needToBreak()) {
+                breaked = 1;
+                break;
+            }
+        catch (...) {}
+        finally (...) {}
+
+        if (breaked && breaked--)
+            break;
+    }
+}

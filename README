@@ -1,0 +1,864 @@
+       Let's Finally Try to Catch C -- Java like exception handling in C
+       =================================================================
+
+
+Preface
+-------
+Some time ago I was working on large deeply nested C code (a recursive-descent
+parser) and wanted to be able to jump away (to outside the parser) on a fatal 
+condition.  Instead of using the setjmp()/longjmp()-pair as is for this occa-
+sion, I thought it would be nice to have a generic/reusable mechanism like in 
+C++ or Java.
+
+I started with simple 'try', 'catch' and 'throw' macros that worked fine for
+this application, but did not allow nesting and lacked other useful features.
+When I realized that a complete/generic exception handling package might be 
+useful for others and myself, I took up the challenge to create such a package
+that looks like Java in the best possible way.
+
+It was really exciting and fun to in a way extend the C language and I am
+happy to share it with you!  I hope you will enjoy this package, and if you
+have comments or find flaws please let me know:
+
+    Cornelis van der Bent
+    cg_vanderbent@mail.com
+
+    April 1999.
+
+
+Article Introduction
+--------------------
+Well written C code has to deal with four kinds of anomalies: regular failures 
+(e.g., unable to open file), out-of-memory conditions, run-time error signals 
+(like SIGSEGV), and failed assertions. Traditionally, each is handled in a
+different way: returning error codes, exiting, using setjmp()/longjmp(), and
+printing a message followed by abort() respectively. Furthermore, C does not
+support centralized exception handling like C++ and Java do. This all results
+in functional code getting cluttered with exception handling statements.
+
+While working on a recursive-descent parser in C, I needed a mechanism to skip
+any number of stack frames for easy error handling. The simple try, catch and 
+throw macro's I created using setjmp()/longjmp() worked fine, but did not allow
+nesting and only addressed one kind of errors. Soon after, I took up the
+challenge to create a complete centralized exception handling package in plain
+ANSI C, that looks like Java (and C++) in the best possible way, is easy to use
+and has as little side-effects as possible.
+
+In this article I will show you how to use the package, describing every
+feature in detail; see Example 1 and Figure 1 to get a taste. Also, I will
+explain some interesting aspects of the implementation. Because the functio-
+nality is so very similar to what C++ and Java offer, reading this article
+will be of help even if you will never use my package. Generally speaking,
+exception handling is an important and yet difficult subject, thinking about
+it and applying the right techniques saves time and makes life easier.
+
+Figure 1:
+* Catching all four kinds of exceptions: explicitly thrown by application,
+  out-of-memory errors (using a simple optional module not being discussed 
+  here), failed assertions, and signals (SIGABRT, SIGFPE, SIGILL and SIGSEGV).
+* Unlimited user extendable exception class hierarchy. Classes can extend
+  classes defined in other (compiled) modules. An exception class can be
+  caught with any (in)direct ancestor or itself. Just like Java and C++.
+* Can be used in any multi-threading environment. Compile-time configuration.
+  Only requires two platform specific functions: one getting the thread ID and
+  the other for mutual exclusion locking.
+* Unlimited nesting in try, catch and finally blocks.
+* Run-time check for duplicate and superfluous catch clauses (DEBUG option).
+  A similar check as Java and C++ do at compile-time.
+* Exception propagation, overruling and rethrowing identical to Java.
+* Always executed finally block, also when using return(), break or continue.
+* Looks very similar to Java (or C++). C implementation details are nicely
+  hidden. Little side effects.
+* Caught exception member functions like getMessage().  No context pointer
+  as first argument; gives a real OO look.
+* All messages (except those of signals) contain file name and line number.
+* Default behavior or a message printed, for not caught exceptions.
+* Fully ANSI C compliant code and no platform dependencies.
+* Well documented: source code, extensive README and this article.  (Due to 
+  limited space the comments were left out from the listings.)
+* Free.
+
+
+
+Getting Started
+---------------
+For a single-threaded application you only need to include "Except.h" and link 
+the supplied modules.
+
+Example 1: When the critical code throws a MyFault exception or any of its 
+subclasses, it is handled.  For any other exception a message containing
+its name and information where thrown (file & line) are printed, followed by
+a rethrow.  The clean up code is always executed.
+
+#include <Except.h>
+
+ex_class_define(MyFault, Exception);
+ex_class_define(AlsoMyFault, MyFault);
+ex_class_define(AgainMyFault, MyFault);
+
+void TryMe(void) {
+    try {
+        /* critical code */
+    }
+    catch (MyFault, e) {
+	/* handle one of my faults */
+    }
+    catch (Throwable, e) {
+        printf("%s\n", e->getMessage());
+	throw (e, NULL);
+    }
+    finally {
+        /* clean up code */
+    }
+}
+
+
+Catching
+--------
+At this moment the exception supplies four public member functions that may
+be called inside the 'catch' block:
+
+    char *getMessage(void) - returns a pointer to a static string containing a
+                             detailed description of the exception
+    int   getClass(void)   - returns the exception class (address)
+    void *getData(void)    - returns the pointer to (application) data asso-
+                             ciated with the exception: the second argument
+                             of throw(), for EX_ASSERT it is a pointer to the
+                             static string containing the false expression,
+                             for the other exceptions it is NULL
+
+The convenience of not having to supply these functions a pointer to the
+current exception, comes with a price.  In a multi-threaded application,
+a fast hashtable lookup is performed at 
+each call; because this is done as part of handling an error condition, it is
+not a big deal (for most applications).  In a single-threaded application only
+a very fast direct lookup (involving a few if-statements and some pointer
+arithmetic) is performed.
+
+It is important to know that the pointer to the caught exception (<e> in most
+examples), is only valid inside its 'catch' block.  You may pass it to a
+routine (as <Except *> type) as long as you stay outside another 'try'
+statement.  Also note that getMessage() returns a pointer to a static string
+that will be overwritten or freed.  Finally, it is the responsibility of the
+application to free allocated memory passed with throw() and returned by getData().
+ <<<Finally you should also
+know that the Except pointer and its structure is only valid in the scope of
+its catch clause, for as long you stay outside try statements (that may appear
+inside a catch clause).>>>
+
+Of course more than one catch() can be specified for a critical code section.
+As in Java, the evaluation process is performed from top to bottom and an 
+exception is caught by only one (the first matching) 'catch' clause.  It is
+possible to create superfluous or duplicate 'catch' clauses:
+
+    try {}
+    catch (Exception, e) {}
+    catch (FailedAssertion, e) {}  /* superfluous: already caught by Exception*/
+    finally {}
+
+or:
+
+    try {}
+    catch (FailedAssertion, e) {}
+    catch (RuntimeException, e) {}
+    catch (FailedAssertion, e) {}	/* duplicate */
+    finally {}
+
+When DEBUG is #defined when compiling the application module, a run-time check
+for all possible conditions like this, is done as part of executing the 'try' 
+statement.  So this check is performed even before the 'try' block is executed 
+and consequently also before an exception has occurred!  Java informs you about
+conditions like this at compile-time, but this is not possible in C; at least
+you are informed and it is done as early as possible.
+
+These checks add a little overhead; fortunately the persistent overhead is zero
+when DEBUG is not #defined.
+
+It is allowed to have no 'catch' clauses at all.  But in that case you will
+get a warning that 'catch' clause(s) are missing, when DEBUG is #defined.
+
+
+As some C flow control statements, catch() expects to be followed by a
+statement.  So this can be a single statement closed with a semicolon or a
+compound statement between braces.  Consequently it is also allowed to write:
+
+    catch (Throwable, e);   /* 'catch' followed by empty statement */
+
+which will only catch any exception and performs no further actions.
+This will of course not affect the run-time checking discussed above.
+
+There is a predefined exception class hierarchy which you can extends as
+far as you like, there are no limits!
+
+/* this is in Except.h */
+ex_class_declare(Exception,           Throwable);
+ex_class_declare(OutOfMemoryError,    Exception);
+ex_class_declare(FailedAssertion,     Exception);
+ex_class_declare(RuntimeException,    Exception);
+ex_class_declare(AbnormalTermination, RuntimeException);  /* SIGABRT */
+ex_class_declare(ArithmeticException, RuntimeException);  /* SIGFPE */
+ex_class_declare(IllegalInstruction,  RuntimeException);  /* SIGILL */
+ex_class_declare(SegmentationFault,   RuntimeException);  /* SIGSEGV */
+
+/* this is in Except.c */
+ex_class_define(Exception,           Throwable);
+ex_class_define(OutOfMemoryError,    Exception);
+ex_class_define(FailedAssertion,     Exception);
+ex_class_define(RuntimeException,    Exception);
+ex_class_define(AbnormalTermination, RuntimeException);  /* SIGABRT */
+ex_class_define(ArithmeticException, RuntimeException);  /* SIGFPE */
+ex_class_define(IllegalInstruction,  RuntimeException);  /* SIGILL */
+ex_class_define(SegmentationFault,   RuntimeException);  /* SIGSEGV */
+
+It's simple, don't you think.
+
+Erik: zo zien de [check] messages er uit:
+
+Level2Exception: file "Test.c", line 379.
+
+Superfluous catch(Level1Exception): file "Test.c", line 370; already caught by Exception at line 366.
+
+Duplicate catch(Level1Exception): file "Test.c", line 419; already caught at line 418.
+
+Warning: No catch clause(s): file "Test.c", line 396.
+
+
+
+Throwing
+--------
+Deliberately throwing an exception is quite simple using throw().  The first
+argument is the exception class.  With the
+second argument you can pass a void pointer value which can be retrieved in
+the 'catch' code with the exceptions' getData() member function (as described
+in "Catching").  Do not pass a pointer to a non-static local variable (which
+resides on the stack), because it gets out of scope (the stack is unwound) if
+the exception is caught in another routine.  This is regular C programming
+practice.
+
+Exceptions can be thrown from any scope:
+
+    outside                - it will be reported as being lost
+    inside 'try' block     - it will be caught by corresponding 'catch' or will
+                             otherwise be propagated (more on this later)
+    inside 'catch' block   - it will be propagated (...)
+    inside 'finally' block - it will override any pending exception and
+                             will be propagated itself (...)
+
+Note that there is no difference if the 'throw' is done directly in the
+exception handling block, or if there are any number of routine calls in
+between:
+
+    There(void)
+    {
+        throw (MyException, "How are you?");
+    }
+
+    Hi(void)
+    {
+        There();
+    }
+
+    What(void)
+    {
+        try
+        {
+            Hi();
+        }
+        catch (Exception, e)
+        {
+            printf("%s\n", e->getData());
+        }
+        finally;
+    }
+
+Invoking What() will result in printing "I'm fine, thank you!" (just kidding).
+
+
+
+Rethrowing
+----------
+Inside a 'catch' block you can throw the just caught exception again (to let
+it propagate to a higher exception handling level) using rethrow():
+
+    catch (Throwable, e)
+    {
+        throw (e, 0);
+    }
+
+Note that the second argument (where you normally place your data pointer)
+is not looked at, so the data of the original exception is passed on.
+
+
+Returning
+---------
+As in Java the 'finally' block is always executed even when return() is used:
+
+    try
+    {
+        throw(MyFault, NULL);
+    }
+    catch (MyFault, e)
+    {
+        return(-1);
+    }
+    finally
+    {
+        printf("Just before return.\n");
+    }
+
+This code fragment would indeed print "Just before return.".  When "Except.h"
+is included return() is defined as macro that takes care of everything and
+also works as the regular return() when not directly inside nor outside an
+exception handling block.
+
+
+When you use return() inside the 'finally' block, this will override a
+pending exception that would otherwise have been propagated.  This pending
+exception will be lost and no notification message will be printed.  Java
+behaves in exactly the same manner.
+
+
+Unless you have already redefined it, having return() as a macro is not a 
+problem in most cases.  The macro does however give some overhead, so you
+can best avoid it in code sections that frequently use return() and/or have
+a high efficiency requirement.  Since return() is defined as a macro having
+one parameter (always between parentheses), the C preprocessor will do nothing 
+when you omit the parentheses, yielding the native C 'return':
+
+    return -1;                     /* uses the native C 'return' */
+
+However, when you return an expression that starts with a parenthesis the C
+preprocessor will replace it up to the matching closing parenthesis; this will
+often/always result in erroneous code:
+
+    return (int *)pData;     /* erroneous when return() macro defined */
+
+Here the C preprocessor will use "int *" as argument of the return() macro.
+There is a simple remedy, by using the C comma operator you can prevent the
+expression from starting with a parenthesis:
+
+    return 0,(int *)pData;  /* problem solved - no additional overhead */
+
+You could also use an intermediate variable (which will probably be optimized 
+away by modern compilers):
+
+    int *pTmp = (int *)pData;
+    return pTmp;
+
+Although this may seem tricky, keep in mind that you may not encounter this
+situation often.
+
+
+
+Finally
+-------
+The 'finally' clause is dealt with in other sections.  The only thing to note
+is that every 'try' statement must have a (possibly empty) 'finally' clause.
+
+
+
+Using 'break' and 'continue'
+----------------------------
+The C 'break' and 'continue' statements used directly inside 'try', 'catch' or
+'finally' (so without enclosing 'while', 'for' or 'swtich' statement) blocks
+work differently compared to Java:
+
+    'break    in     try' - start executing 'finally' block
+    'continue in     try' - start executing 'finally' block
+    'break    in   catch' - start executing 'finally' block
+    'continue in   catch' - start executing 'finally' block
+    'break    in finally' - leave 'finally' block
+    'continue in finally' - leave 'finally' block
+
+When you embed a 'try' statement in for example a 'while' loop in Java, you can
+use 'break' to leave the loop (after first executing the 'finally' code) or use
+'continue' to skip to the next iteration (in this case the 'finally' code is
+also executed first).  But, if you may need this functionality you can use the
+following workaround:
+
+    int breaked;
+
+    breaked = 0;
+    while (...)
+    {
+        try
+        {
+            if (...)
+                breaked = 1;
+        }
+        catch (...) {}
+        finally (...) {}
+
+        if (breaked)
+            break;
+    }
+
+Although 'break' and 'continue' work differently, they can still be used for
+what they do do.
+
+
+
+Nesting
+-------
+You can start a critical code section wherever you like.  Nesting can be
+done up to unlimited depth.  In this way different exception handling levels
+can be created (across routine boundaries).
+
+    try
+    {
+        try {
+            try {}
+            catch (...) {}
+            finally {}
+        }
+        catch(...) {}
+        finally {}
+    }
+    catch
+    {
+        try {}
+        catch(...) {}
+        finally {}
+    }
+    finally
+    {
+        try {}
+        catch(...) {}
+        finally {}
+    }
+
+Not caught exceptions will propagate upwards as expected (see below).
+
+
+
+Propagation
+-----------
+When an exception is not caught at the exception handling level it occurred,
+it is propagated upwards.  Propagation can be best understood by thinking that
+the exception is 'rethrown' just below its 'finally' block (that belongs to the 
+level the exception occurred).  Then the same rules apply as described above
+in "Throwing".  The result depends on where this 'rethrow' takes place:
+
+    outside                - it will be reported as being lost
+    inside 'try' block     - it will be caught by corresponding 'catch' on this
+                             higher level or will otherwise be propagated again
+    inside 'catch' block   - it will be propagated to yet the next level
+    inside 'finally' block - it will override any pending exception and
+                             will be propagated to the next level upwards
+
+Here's an example of this last rule:
+
+    try
+    {
+        throw(-777, NULL);      /* not caught on this level - pending */
+    }
+    catch (EX_MEMORY, e) {}
+    catch (-666, e) {}
+    finally
+    {
+        try
+        {
+            throw(-321, NULL);  /* not caught on this level - 'rethrown' */
+        }
+        catch (-123, e) {}
+        finally {}
+        /* 'rethrow(-321)' will override 'throw(-777)' */
+    }
+    /* 'rethrow(-777)' will not take place because of override */
+    /* 'rethrow(-321)' however does take place here */
+
+So because 'throw(-777)' is not caught, it would have been 'rethrown' below
+its 'finally', but it is overridden by 'throw(-321)' inside its 'finally'.
+
+### In the previous version you had to work with numbers instead of classes
+    now.  It costs me too much time to change this example right now.  The
+    mechanism has stayed the same however, so when you think classes you
+    will still understand ...
+
+
+
+Signals
+-------
+As part of executing the outermost 'try', the handlers of four ANSI C supported
+signals (SIGABRT, SIGFPE, SIGILL and SIGSEGV) are saved and replaced by a
+handler from this exception handling package.  This handler causes a 'throw'
+to occur when one of these four signals is raised.  The resulting exception
+is handled as any of the other exceptions.
+
+    void Foo(void)
+    {
+        *((int *)0) = 0;        /* causes SIGSEGV - may not be portable */
+    }
+
+    void Boo(void)
+    {
+        try
+        {
+            Foo();
+        }
+        catch (SegmentationFault, e)
+        {
+            printf("%s\n", e->getMessage());
+        }
+        finally;
+    }
+
+This will print a segmentation fault message.
+
+
+As part of the outermost 'finally', the signal handlers stored during the
+outermost 'try' will be restored again.  In a multi-threading environment the 
+threads/tasks either share the signal handlers (like on Solaris) or each have
+their private set (like on VxWorks); with shared handlers, restoration is
+delayed until the final thread leaves the exception handling scope (refer to
+"Multi-threading" below).
+
+When a signal exception is not caught and the signal handlers are restored,
+this signal is sent after all using raise().  When the signal handlers are not
+restored yet (may occur in a multi-threading environment with shared handlers), 
+a message that the exception was lost is printed.
+
+
+
+Assertion Checking
+------------------
+The header "Assert.h" redefines the ANSI C assert() macro in order to let it
+generate a 'throw' on failure.  Failed assertions are caught using EX_ASSERT.  
+The exception specific data (retrieved with the member function getData())
+points to a static character array containing the failed expression.
+
+Only when the preprocessor macro DEBUG is defined, will assert() expand to
+assertion checking code; without DEBUG defined, assert() is an empty macro.
+I experienced that, when building fault tolerant code, it can be very handy to
+have a macro that works as assert() during the test phase (i.e. when DEBUG is
+defined), but returns on failure during field operation.  For this purpose I 
+created a macro validate().  Note that validate() always leaves some code
+behind so use it sparingly where high performance is an issue.
+
+    #include "Assert.h"
+
+    void * ListRemoveHead(List *pList)
+    {
+        assert(pList != NULL);
+        validate(pList->count > 0, NULL);
+        ...
+    }
+
+When in this example (taken from "List.c") <pList> is NULL, the caller has
+made a structural/severe error.  I chose to use assert() because this kind of
+error should be found during tests and I don't want this test to slow down
+ListRemoveHead() when the software is released.  On the other hand, trying to
+remove the head of an empty list (when pList->count == 0) is a more functional
+and less severe user error.  It might for example be caused by a misunderstan-
+ding of how to use this list operation, or by an exceptional condition that 
+occurred in a complex algorithm.  By using validate(), the programmer will be
+notified during tests; but when DEBUG is no longer defined the ListRemoveHead()
+will return the reasonable value NULL instead of causing a program crash (some
+time later).
+
+When validate() is used in void function you must use NOTHING (defined in
+"Assert.h") as return value :
+
+    void FactorStore(int alpha, int beta)
+    {
+        validate(alpha < beta, NOTHING);
+        ...
+    }
+
+
+When you want the functionality of validate() but rather like to throw an
+exception instead of returning, you can use the check() macro.
+
+
+When assert() is used outside an exception handling scope, it behaves as
+usual.  In contrary with the ANSI C assert(), the default behavior of assert() 
+(which is also used in validate() and check()) outside, is to not invoke the
+C library function abort() to terminate the process.  On a failed assertion,
+which typically occurs in the test phase, I rather leave the program running
+to see what else happens.  But if you do like to use abort(), simply define
+ASSERT_ABORT.
+
+
+
+Allocating Memory
+-----------------
+Error checking code is (or should be) often seen around calls of malloc(),
+calloc() and realloc():
+
+    if ((pData = malloc(sizeof(DATA))) == NULL)
+        return ERROR;
+
+The header file "Alloc.h" defines each of these operations as macro that per-
+form this check for you and throw an EX_MEMORY exception when out-of-memory:
+
+    #include "Alloc.h"
+
+    void Nice(void)
+    {
+        try
+        {
+            pData = malloc(sizeof(DATA));
+        }
+        catch (OutOfMemoryError, e)
+        {
+            printf("%s\n", e->getMessage());
+            exit 1;
+        }
+        finally;
+    }
+
+This will print an out-of-memory message when malloc() fails.
+
+
+For convenience a new() macro is also supplied which uses the C library routine
+calloc().  Because you can simply pass the type, it saves you from having to
+write sizeof() all the time:
+
+    pData = new(DATA);
+
+
+These macros add only a small overhead (a function call and an if statement),
+so even when speed is an issue you may still want to use them.  Note that the
+check is also performed when using these macros outside a critical code
+section; so using these macros you will always be notified when a memory allo-
+cation has failed.
+
+
+
+Multi-threading
+---------------
+This package allows multiple threads/tasks, having a common address space, to
+concurrently use exception handling.  From a user perspective almost every-
+thing stays the same compared to a single-threading application.  The internal
+exception context that has to be kept for each thread is conveniently hidden
+for the user; [s]he is not confronted with obscure handlers as you would 
+expext to see in a C implementation.
+
+Internally the thread ID is used as key for exception context lookup.
+Everything is done for you now (compared to previous version).  You choose
+one of: EXCEPT_MT_SHARED EXCEPT_MT_PRIVATE, by adding a -D.... C-preprocessor
+flag.  You also have to supply a function with which to get the current
+thread-ID and a function to perform a mutex lock......
+
+As was mentioned above in "Signals": In a multi-threading environment the
+threads/tasks either share the signal handlers (like on Solaris) or each have
+their private set (like on VxWorks).  Because exception handling has to decide
+if it must delay default signal handler restoration until the final thread 
+leaves the exception handling scope (when handlers are shared), the user
+has to choose... see above.
+
+    #include <vxWorks.h>
+    #include <Except.h>
+    
+    void Task(void)
+    {
+        try                      /* implicitly creates exception context */
+        {
+            /* do something */
+        }
+        catch (Throwable, e)
+        {
+        }
+        finally;
+    }        
+
+    void Launcher(void)
+    {
+        ex_threading_init(taskIdSelf, EX_PRIVATE_HANDLERS);
+
+        taskSpawn("task1", MY_PRIORITY, 0, MY_STACK_SIZE, Task, 1);
+        taskSpawn("task2", MY_PRIORITY, 0, MY_STACK_SIZE, Task, 2);
+        taskSpawn("task3", MY_PRIORITY, 0, MY_STACK_SIZE, Task, 3);
+    }
+
+Each thread has to invoke ex_thread_enter() before its first 'try' statement.
+When the thread ID was used earlier by another thread (some OSs recycle thread
+IDs), this routine destroys the outdated exception context if there.  Normally
+this context is destroyed automatically, but will be left behind when
+for example killed by another thread.  Adding 'outermost'
+just before the outermost 'try' prevents
+a memory leak, and makes sure that the exception handling package keeps track
+of the number of active threads, so it can restore shared signal handlers at 
+the right moment.
+
+A thread must not use any of the exception handling macros (including return()),
+because this implicitly creates a new exception context for the thread and will
+probably result in a memory leak.
+
+When a thread kills another thread it should call ex_thread_cleanup() with the
+ID of the killed thread.  This will have the same effect as ex_thread_leave().
+In a multi-threading environment that recycles IDs, ex_thread_cleanup() may
+lead to hazardous situations when a new thread starts using the ID before the
+cleanup() has finished.  To prevent this, thread scheduling should be disabled
+during killing the thread an the cleanup which follows immediately.  You could
+also decide to not use ex_thread_cleanup() at all, because ex_thread_enter()
+takes care of the cleanup when the thread ID was used before.
+
+This is all there is to multi-threading, all the rest remains the same!
+
+### (Almost) all ex_thread... calls are not needed any more in the current
+    version!
+
+
+
+Preprocessor Flags
+------------------
+This section summarizes the C preprocessor flags and describes their effect
+when defined:
+
+    DEBUG        - switches on assertion checking and catch() checking
+    ASSERT_ABORT - causes assert macros to invoke abort()
+    EXCEPT_DEBUG - switches on printing debug messages in "Except.h"
+
+The EXCEPT_DEBUG flag is only used during development of the exception
+package.
+
+
+
+Compiler Warnings
+-----------------
+When you use the 'return' macro inside a 'try', 'catch' or 'finally' block,
+your compiler may warn you:
+
+    try
+    {
+	return(7);
+    }
+    catch (Throwable, e)		/* line # 77 */
+    {
+	printf("%s\n", e->getMessage());
+    }
+    finally;
+
+    --> "Test.c", line 77: warning: end-of-loop code not reached
+
+These warning are about the exception handling macro code and can be safely
+ignored.
+
+
+### A number of these below have been solved/done.
+
+Possible Extensions & Modifications
+-----------------------------------
+A. Shield non-user definitions in header files with #ifdef _EXCEPT_PRIVATE.
+
+B. Choose other name for global variables that will less likely clash with
+   user names.
+
+C. Configurable central error message output, instead of printing to <stderr>.
+
+D. Place last accessed hash table entry at the head of the node list to spead
+   lookup in case killed threads are not cleaned up.
+
+E. Supply some mechanism for hierarchical user exception 'classes' (using
+   bit masks: <mask> member in Except structure).  In the current implementa-
+   tion it is not very nice that you can only either catch a single user 
+   exception (with a negative number) or catch them all (with EX_THROW).
+
+F. Investigate if rethrow() can be eliminated in a clean way.  Refer to the
+   discussion above why it was introduced.
+
+G. A new() macro for arrays.  The only 'problem' is choosing a nice name.
+
+
+
+Known Problems & Caveats and Todos
+----------------------------------
+A. Integers are assumed to be (at least) 32 bit.
+
+B. The code belonging to this package does not throw exception when out of 
+   memory.  This is not a real issue since only small chunks of memory are 
+   allocated; when even these are not available, we're in a fatal situation.
+
+C. In multi-threading, the correct operation of this package fully depends on
+   the application supplied routine that returns the thread ID.  When it would
+   return different IDs for the same thread, chaos will be the result.
+
+D. In multi-threading not invoking ex_thread_leave() or ex_thread_cleanup()
+   for an old thread, results in a memory leak.
+
+E. The assert() and validate() macros are used by the package.  Check what
+   happens when each of these internal checks fails.  We don't want recursion
+   or crashes.  This must be done before any final release.
+
+F. Some OSs mask the handled signal.  Some restore this mask when the signal
+   handler returns.  Investigate if restoration takes place on every OS when
+   the handler is left using longjmp().
+
+G. A harsh assertion check scheme for ExceptTreadEnter/Leave() in 
+   ExceptGetContext().  Let ExceptGetContext() when ex_thread_enter() has not
+   been invoked yet.  Currently ExceptGetContext() is very nice and creates
+   a new context when not there yet.
+
+H. Maybe clean up the way <pC> and ExceptGetContext() are used in "Except.c".
+   Invoking ExceptGetContext() may not be strictly necessary at all places.
+
+I. Perform optimizations.  The current implementation was made with a main
+   focus on clearity.
+
+J. Some pointer variables (like <pC->exStack> and <pContextHash>) are misused
+   as flag (i.e., they are NULL or not).  Although this might make "Except.c"
+   a bit more efficient, it also makes this code harder to understand/maintain.
+   Finally, the routine ExceptFinally() requires some clean up.
+
+K. Better testing and code review for especially multi-threading is needed.
+   Please have a close look and tell me what you find!
+
+L. Review (style, syntactics and semantics) of this README and the comments
+   in the sources would also be appreciated.
+
+
+
+The Files
+---------
+This package consists of the following files (they are formatted with a TAB
+width of 8 and use '\n' as end-of-line character (the UNIX way)):
+
+    Alloc.c  - Memory allocation module.  Contains the private routines used
+               by the optional memory allocation macros defined in "Alloc.h".  
+               Compile and link this file with your application when you use 
+               these macros.
+
+    Alloc.h  - Memory allocation module header.  Include when you want to use
+               the memory allocation macros.
+
+    Except.c - Exception handling module.  Contains the private routines and
+               global variable definitions used by the exception handling
+               macros defined in "Except.h".  This file must be compiled and
+               linked with your application.
+
+    Except.h - Exception handling module header.  Must be included.
+
+    Hash.c   - Hash table library.  It is used by the exception handling
+               package, so this file must be compiled and linked with your
+               application.  You can also use this easy library yourself.
+
+    Hash.h   - Hash table library header.  Only needs to be included if you
+               want to use this library yourself.
+
+    Lifo.c   - LIFO buffer library.  It is used by the exception handling
+               package, so this file must be compiled and linked with your
+               application.  You can also use this easy library yourself.
+
+    Lifo.h   - LIFO buffer library header.  Only needs to be included if you
+               want to use this library yourself.
+
+    List.c   - Doubly linked list library.  It is used by the exception
+               handling package, so this file must be compiled and linked with 
+               your application.  You can also use this easy library
+               yourself.  It contains a lot more routines than used by this
+               package.
+
+    List.h   - Doubly linked list library header.  Only needs to be included
+               if you want to use this library yourself.
+
+    Test.c   - The single-threaded test file.  Can be used as a source of
+               examples.  (Multi-threading has been tested on Solaris the
+               test file is not finished yet and is therefore not included.)
+
+    README   - Last but noy least, this very file.  It describes how to use
+               the package.  Operation is explained in the source.
+
+
+
+               >>>>>>>>>>  That's all folks!  <<<<<<<<<<

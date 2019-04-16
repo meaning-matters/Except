@@ -1,0 +1,28 @@
+Figure 1: Summary of the features.
+
+* Catching all four kinds of exceptions: explicitly thrown by application,
+  out-of-memory errors, failed assertions, and synchronous signals (traps).
+* Unlimited user extendible exception class hierarchy. Classes can extend
+  classes defined in other (compiled) modules. An exception class can be
+  caught with any (in)direct ancestor or itself. Just like in Java and C++.
+* Can be used in any multi-threading environment. Compile-time configuration.
+  Only requires two platform specific functions: one getting the thread ID and
+  the other for mutual exclusion locking.
+* Unlimited nesting in try, catch and finally blocks.
+* Exception propagation, overruling and rethrowing identical to Java. Also
+  works properly for recursive functions.
+* Run-time check for duplicate and superfluous catch clauses (DEBUG option).
+  A similar check as Java and C++ do at compile-time.
+* Always executed finally block, also when using return() (macro), break or
+  continue.
+* Looks very similar to Java (or C++). C implementation details are nicely
+  hidden. Very little side effects and irregularities.
+* Caught exception member functions like getMessage(). No context pointer
+  as first argument; gives a real OO look.
+* All messages (except those of signals) contain file name and line number.
+* Default behavior or a message printed, for not caught exceptions.
+* Fully ANSI C compliant code and no platform dependencies.
+* Well documented: source code, extensive README and this article. (Due to 
+  limited space the comments and horizontal space were stripped from the
+  listings in this article.)
+* Free, source code available. 

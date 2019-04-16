@@ -1,0 +1,37 @@
+Article for October 1999 issue of Dr. Dobb's Journal
+----------------------------------------------------
+
+Title:  Let's Finally Try to Catch C
+Sub:    Centralized exception handling in C
+By:     Cornelis van der Bent
+
+
+This directory contains the following files:
+
+text        - the plain ASCII (line width 80) article text including author
+              biography and references. It's about 2500 (~2550 not counting
+              author biography and references) words as Jon suggested.
+
+exampleNN   - 12 code example files including headings in plain ASCII (80).
+
+sidebar1    - Side bar of 500 words. A bit long, but yet interesting; it does
+              not contain useless details.
+
+figure1     - ASCII text figure with heading.
+
+figureN.fm  - 4 diagrams in FrameMaker format.  Each includes a heading.
+
+figureN.gif - Same 4 diagrams as GIF image.
+
+listing1,2  - Two listings with a total length of 454 lines. Longer than the
+              Author Guidelines suggest, I know.  I think that many readers
+              will, for this article, be very interested in the code because 
+              it's not features or concepts alone that are interesting. Just
+              as I would, readers will want to know/see how to create something
+              so similar to C++ and Java (even with inheritance) in C!
+
+              I already stripped away the hundreds of comment lines, removed
+              vertical white space and left out not essential details.
+              Minimizing the length much further will do no good.
+
+                        - - - - - - - - - - - - -

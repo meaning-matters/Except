@@ -1,0 +1,22 @@
+Example 12: A Solaris threads implementation of the routine used by the package
+to guard critical changes to internal data. Because this routine does not
+disable thread scheduling, code killing a thread must hold the lock. [SOL26]
+
+
+#include <thread.h>
+
+void LockUnlock(int mode)
+{
+    static mutex_t mutex;
+    static int     initialized;
+
+    if (!initialized) {
+        mutex_init(&mutex, 0, 0);
+        initialized = 1;
+    }
+
+    if (mode == 0)
+        mutex_unlock(&mutex);
+    else
+        mutex_lock(&mutex);
+}

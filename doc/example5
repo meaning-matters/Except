@@ -1,0 +1,24 @@
+Example 5: Throw works across function calls. Invoking what() prints
+"I'm fine, thank you!".
+
+
+there()
+{
+    throw (Funny, "How are you?");
+}
+
+hi()
+{
+    there();
+}
+
+what()
+{
+    try {
+        hi();
+    }
+    catch (Funny, e) {
+        printf("%s\n", e->getData());
+    }
+    finally;
+}

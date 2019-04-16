@@ -1,0 +1,10 @@
+Example 3: Duplicate catch. When an exception class appears in two catch
+clauses, only the first will ever catch matching exceptions.
+
+
+try {}
+catch (FailedAssertion) {}
+catch (RuntimeException) {}
+catch (FailedAssertion) {}  /* never matched */
+catch (Exception) {}
+finally {}

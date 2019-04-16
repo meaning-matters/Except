@@ -1,0 +1,25 @@
+Example 10: This small program demonstrates signal handling and recursion. It
+prints: '0, 1, 2, 3, ArithmeticException: file "?", line 0.'. Note that it is
+impossible to supply file and line information for a signal exception.
+
+
+#include "Except.h"
+
+stacking(int x)
+{
+    try {
+        int y = 1 / x;
+        stacking(x - 1);
+    }
+    finally
+        printf("%d, ", x);
+}
+
+main()
+{
+    try
+        stacking(3);
+    catch (RuntimeException, e)
+        printf("%s\n", e->getMessage());
+    finally;
+}
